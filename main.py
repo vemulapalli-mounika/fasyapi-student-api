@@ -4,10 +4,25 @@ import sqlite3
 import os
 
 from passlib.context import CryptContext
-from fastapi.security import OAuth2PasswordBearer
+
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+
+from jose import jwt
+from datetime import datetime, timedelta
+
+from dotenv import load_dotenv
+
+
+load_dotenv()
 
 app = FastAPI()
 
+
+SECRET_KEY = os.getenv("SECRET_KEY")
+
+ALGORITHM = "HS256"
+
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -47,6 +62,30 @@ pwd_context = CryptContext(
 oauth2_scheme = OAuth2PasswordBearer(
     tokenUrl="login"
 )
+
+
+
+def create_access_token(data: dict):
+
+    to_encode = data.copy()
+
+    expire = datetime.utcnow() + timedelta(
+        minutes=ACCESS_TOKEN_EXPIRE_MINUTES
+    )
+
+    to_encode.update(
+        {"exp": expire}
+    )
+
+    encoded_jwt = jwt.encode(
+        to_encode,
+        SECRET_KEY,
+        algorithm=ALGORITHM
+    )
+
+    return encoded_jwt
+
+
 
 class Student(BaseModel):
     id: int
@@ -92,13 +131,14 @@ def signup(user: User):
     }
 
 
-
 @app.post("/login")
-def login(user: User):
+def login(
+    form_data: OAuth2PasswordRequestForm = Depends()
+):
 
     cursor.execute(
         "SELECT * FROM Users WHERE username=?",
-        (user.username,)
+        (form_data.username,)
     )
 
     data = cursor.fetchone()
@@ -112,7 +152,7 @@ def login(user: User):
     stored_password = data[2]
 
     password_correct = pwd_context.verify(
-        user.password,
+        form_data.password,
         stored_password
     )
 
@@ -122,27 +162,43 @@ def login(user: User):
             detail="Invalid password"
         )
 
-    # Dummy Token
-    token = user.username + "_token"
+    access_token = create_access_token(
+        data={"sub": form_data.username}
+    )
 
     return {
-        "access_token": token,
+        "access_token": access_token,
         "token_type": "bearer"
     }
-
 
 
 def verify_token(
     token: str = Depends(oauth2_scheme)
 ):
 
-    if "_token" not in token:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid token"
+    try:
+
+        payload = jwt.decode(
+            token,
+            SECRET_KEY,
+            algorithms=[ALGORITHM]
         )
 
-    return token
+        username = payload.get("sub")
+
+        if username is None:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid token"
+            )
+
+        return username
+
+    except:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or expired token"
+        )
 
 
 
@@ -178,10 +234,11 @@ def get_student(id: int):
     return data
 
 
+
 @app.post("/students")
 def add_student(
     student: Student,
-    token: str = Depends(verify_token)
+    current_user: str = Depends(verify_token)
 ):
 
     cursor.execute(
@@ -192,7 +249,7 @@ def add_student(
     conn.commit()
 
     return {
-        "message": "Student added successfully"
+        "message": f"Student added by {current_user}"
     }
 
 
@@ -201,7 +258,7 @@ def add_student(
 def update_student(
     id: int,
     student: Student,
-    token: str = Depends(verify_token)
+    current_user: str = Depends(verify_token)
 ):
 
     cursor.execute(
@@ -216,7 +273,7 @@ def update_student(
     conn.commit()
 
     return {
-        "message": "Updated successfully"
+        "message": f"Updated by {current_user}"
     }
 
 
@@ -224,7 +281,7 @@ def update_student(
 @app.delete("/students/{id}")
 def delete_student(
     id: int,
-    token: str = Depends(verify_token)
+    current_user: str = Depends(verify_token)
 ):
 
     cursor.execute(
@@ -235,5 +292,5 @@ def delete_student(
     conn.commit()
 
     return {
-        "message": "Deleted successfully"
+        "message": f"Deleted by {current_user}"
     }
