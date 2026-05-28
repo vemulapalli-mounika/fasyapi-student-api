@@ -4,7 +4,6 @@ import sqlite3
 import os
 
 from passlib.context import CryptContext
-
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 
 from jose import jwt
@@ -12,26 +11,23 @@ from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
 
-
 load_dotenv()
 
 app = FastAPI()
 
-
-SECRET_KEY = os.getenv("SECRET_KEY")
-
+# ---------------- CONFIG ----------------
+SECRET_KEY = os.getenv("SECRET_KEY", "mysecretkey123")  # fallback for Render
 ALGORITHM = "HS256"
-
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-
+# ---------------- DB PATH FIX ----------------
 base_dir = os.path.dirname(os.path.abspath(__file__))
-db_path = os.path.join(base_dir, Student.db)
+db_path = os.path.join(base_dir, "students.db")   # ✅ FIXED HERE
 
 conn = sqlite3.connect(db_path, check_same_thread=False)
 cursor = conn.cursor()
 
-
+# ---------------- TABLES ----------------
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS Students(
     id INTEGER PRIMARY KEY,
@@ -39,7 +35,6 @@ CREATE TABLE IF NOT EXISTS Students(
     marks INTEGER
 )
 """)
-
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS Users(
@@ -51,31 +46,19 @@ CREATE TABLE IF NOT EXISTS Users(
 
 conn.commit()
 
-
-
-pwd_context = CryptContext(
-    schemes=["bcrypt"],
-    deprecated="auto"
-)
-
-
-oauth2_scheme = OAuth2PasswordBearer(
-    tokenUrl="login"
-)
-
+# ---------------- AUTH ----------------
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 
 def create_access_token(data: dict):
-
     to_encode = data.copy()
 
     expire = datetime.utcnow() + timedelta(
         minutes=ACCESS_TOKEN_EXPIRE_MINUTES
     )
 
-    to_encode.update(
-        {"exp": expire}
-    )
+    to_encode.update({"exp": expire})
 
     encoded_jwt = jwt.encode(
         to_encode,
@@ -86,7 +69,7 @@ def create_access_token(data: dict):
     return encoded_jwt
 
 
-
+# ---------------- MODELS ----------------
 class Student(BaseModel):
     id: int
     name: str
@@ -98,7 +81,7 @@ class User(BaseModel):
     password: str
 
 
-
+# ---------------- AUTH ROUTES ----------------
 @app.post("/signup")
 def signup(user: User):
 
@@ -107,17 +90,10 @@ def signup(user: User):
         (user.username,)
     )
 
-    existing_user = cursor.fetchone()
+    if cursor.fetchone():
+        raise HTTPException(status_code=400, detail="Username already exists")
 
-    if existing_user:
-        raise HTTPException(
-            status_code=400,
-            detail="Username already exists"
-        )
-
-    hashed_password = pwd_context.hash(
-        user.password
-    )
+    hashed_password = pwd_context.hash(user.password)
 
     cursor.execute(
         "INSERT INTO Users(username,password) VALUES (?,?)",
@@ -126,15 +102,11 @@ def signup(user: User):
 
     conn.commit()
 
-    return {
-        "message": "User created successfully"
-    }
+    return {"message": "User created successfully"}
 
 
 @app.post("/login")
-def login(
-    form_data: OAuth2PasswordRequestForm = Depends()
-):
+def login(form_data: OAuth2PasswordRequestForm = Depends()):
 
     cursor.execute(
         "SELECT * FROM Users WHERE username=?",
@@ -144,27 +116,14 @@ def login(
     data = cursor.fetchone()
 
     if not data:
-        raise HTTPException(
-            status_code=404,
-            detail="User not found"
-        )
+        raise HTTPException(status_code=404, detail="User not found")
 
     stored_password = data[2]
 
-    password_correct = pwd_context.verify(
-        form_data.password,
-        stored_password
-    )
+    if not pwd_context.verify(form_data.password, stored_password):
+        raise HTTPException(status_code=401, detail="Invalid password")
 
-    if not password_correct:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid password"
-        )
-
-    access_token = create_access_token(
-        data={"sub": form_data.username}
-    )
+    access_token = create_access_token({"sub": form_data.username})
 
     return {
         "access_token": access_token,
@@ -172,74 +131,42 @@ def login(
     }
 
 
-def verify_token(
-    token: str = Depends(oauth2_scheme)
-):
-
+# ---------------- TOKEN CHECK ----------------
+def verify_token(token: str = Depends(oauth2_scheme)):
     try:
-
-        payload = jwt.decode(
-            token,
-            SECRET_KEY,
-            algorithms=[ALGORITHM]
-        )
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
 
         username = payload.get("sub")
 
         if username is None:
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid token"
-            )
+            raise HTTPException(status_code=401, detail="Invalid token")
 
         return username
 
     except:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid or expired token"
-        )
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
-
+# ---------------- STUDENT ROUTES ----------------
 @app.get("/students")
 def get_students():
-
-    cursor.execute(
-        "SELECT * FROM Students"
-    )
-
-    data = cursor.fetchall()
-
-    return data
-
+    cursor.execute("SELECT * FROM Students")
+    return cursor.fetchall()
 
 
 @app.get("/students/{id}")
 def get_student(id: int):
-
-    cursor.execute(
-        "SELECT * FROM Students WHERE id=?",
-        (id,)
-    )
-
+    cursor.execute("SELECT * FROM Students WHERE id=?", (id,))
     data = cursor.fetchone()
 
     if not data:
-        raise HTTPException(
-            status_code=404,
-            detail="Student not found"
-        )
+        raise HTTPException(status_code=404, detail="Student not found")
 
     return data
 
 
-
 @app.post("/students")
-def add_student(
-    student: Student,
-    current_user: str = Depends(verify_token)
-):
+def add_student(student: Student, current_user: str = Depends(verify_token)):
 
     cursor.execute(
         "INSERT INTO Students VALUES (?,?,?)",
@@ -248,10 +175,7 @@ def add_student(
 
     conn.commit()
 
-    return {
-        "message": f"Student added by {current_user}"
-    }
-
+    return {"message": f"Student added by {current_user}"}
 
 
 @app.put("/students/{id}")
@@ -261,36 +185,21 @@ def update_student(
     current_user: str = Depends(verify_token)
 ):
 
-    cursor.execute(
-        """
+    cursor.execute("""
         UPDATE Students
         SET name=?, marks=?
         WHERE id=?
-        """,
-        (student.name, student.marks, id)
-    )
+    """, (student.name, student.marks, id))
 
     conn.commit()
 
-    return {
-        "message": f"Updated by {current_user}"
-    }
-
+    return {"message": f"Updated by {current_user}"}
 
 
 @app.delete("/students/{id}")
-def delete_student(
-    id: int,
-    current_user: str = Depends(verify_token)
-):
+def delete_student(id: int, current_user: str = Depends(verify_token)):
 
-    cursor.execute(
-        "DELETE FROM Students WHERE id=?",
-        (id,)
-    )
-
+    cursor.execute("DELETE FROM Students WHERE id=?", (id,))
     conn.commit()
 
-    return {
-        "message": f"Deleted by {current_user}"
-    }
+    return {"message": f"Deleted by {current_user}"}
